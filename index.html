@@ -426,15 +426,14 @@ function load(){
       if(t.type==='timealarm'){
         t._alarmTotal=null;
         if(t.state==='done')t.state='running'; // 翌日も発火できるように
+        if(!t.nextAlarmTime) t.nextAlarmTime = now + alarmRem(t.alarmAt) * 1000;
       }
       if(t.type==='countdown'&&(t.state==='running'||(t.state==='alarm'&&t.alarmTiming==='before'&&t.remaining>0))){
       // CHECK-2修正: alarmTiming=beforeの場合、アラーム中もカウントを継続する
-        const el=Math.floor((now-(t.resumedAt||now))/1000);
-        t.remaining=Math.max(0,t.remaining-el);
-        if(t.remaining===0)t.state=t.onEnd==='remove'?'_remove':'done';
+        if(!t.endTime) t.endTime = now + t.remaining * 1000;
+        t.remaining=Math.max(0,Math.ceil((t.endTime-now)/1000));
       }
     });
-    timers=timers.filter(t=>t.state!=='_remove');
     // BUG-6修正: リロード後にfullscreenアラームを復元
     timers.forEach(t=>{
       if(t.state==='alarm'&&t.alarmType==='fullscreen'&&!alarmQueue.includes(t.id)){
@@ -695,6 +694,7 @@ function saveTimer(){
       alarmDismiss:document.getElementById('f-ta-dismiss').value,alarmDismissTimeout:parseInt(document.getElementById('f-ta-dismiss-timeout').value)||10,
       baseColor:document.getElementById('f-ta-color').value,thresholds:collectTH('ta-threshold-list'),
       state:prev?.state??'running',_alarmTotal:null};
+    timer.nextAlarmTime = Date.now() + alarmRem(at) * 1000;
   }else{
     const clkIsDetail=currentMode==='detail';
     timer={id:editingId||uid(),type:'clock',title:document.getElementById('f-clock-title').value||'',fmt:clkIsDetail?document.getElementById('f-clock-fmt').value:'24',dateFmt:clkIsDetail?document.getElementById('f-clock-date').value:'date-only'};
@@ -722,12 +722,73 @@ function deleteTimerById(id){timers=timers.filter(t=>t.id!==id);alarmQueue=alarm
 function deleteTimer(){if(!editingId)return;deleteTimerById(editingId);closeModal();}
 
 /* ── タイマー操作 ── */
-function startTimer(id){const t=timers.find(x=>x.id===id);if(!t||t.type==='clock'||t.type==='timealarm')return; // BUG-F修正: countdown以外は開始不可
-t.state='running';t.resumedAt=Date.now();if(t.remaining===0||t.remaining==null)t.remaining=t.total;save();render();}
-// BUG1修正: pauseはアラームではないので独自イベント名を使う
-function pauseTimer(id){const t=timers.find(x=>x.id===id);if(!t||!t.pausable)return;t.state='paused';save();render();checkTriggers('pause_start',id);}
-function resumeTimer(id){const t=timers.find(x=>x.id===id);if(!t)return;t.state='running';t.resumedAt=Date.now();save();render();checkTriggers('pause_stop',id);}
-function resetTimer(id){const t=timers.find(x=>x.id===id);if(!t)return;if(t.type==='countdown'){t.remaining=t.total;t.state='idle';t._alarmFired=false;t._endProcessed=false;t._alarmFiredBefores={};}clearDismiss(id);save();render();}
+function startTimer(id, baseStartTime){
+  const t=timers.find(x=>x.id===id);
+  if(!t||t.type==='clock'||t.type==='timealarm')return; // BUG-F修正: countdown以外は開始不可
+  t.state='running';
+  t.resumedAt=Date.now();
+  t._alarmFired=false;
+  t._endProcessed=false;
+  t._alarmFiredBefores={};
+  if(t.remaining===0||t.remaining==null)t.remaining=t.total;
+  const startMs=baseStartTime||Date.now();
+  t.endTime=startMs+t.remaining*1000;
+  t.remaining=Math.max(0,Math.ceil((t.endTime-Date.now())/1000));
+  if(t.remaining===0){
+    if(t.alarmType!=='none'){
+      triggerAlarm(t);
+      checkTimerEndTriggers(t.id,t.endTime);
+    }else if(!t._endProcessed){
+      t._endProcessed=true;
+      checkTimerEndTriggers(t.id,t.endTime);
+      if(t.onEnd==='reset'){
+        t.remaining=t.total;
+        t.state='idle';
+        t._alarmFiredBefores={};
+      }else if(t.onEnd==='remove'){
+        timers=timers.filter(x=>x.id!==t.id);
+      }else{
+        t.state='done';
+      }
+    }
+  }
+  save();
+  render();
+}
+function pauseTimer(id){
+  const t=timers.find(x=>x.id===id);
+  if(!t||!t.pausable||t.state!=='running')return;
+  t.state='paused';
+  t.remaining=Math.max(0,Math.ceil((t.endTime-Date.now())/1000));
+  save();
+  render();
+  checkTriggers('pause_start',id);
+}
+function resumeTimer(id){
+  const t=timers.find(x=>x.id===id);
+  if(!t||t.state!=='paused')return;
+  t.state='running';
+  t.resumedAt=Date.now();
+  t.endTime=Date.now()+t.remaining*1000;
+  save();
+  render();
+  checkTriggers('pause_stop',id);
+}
+function resetTimer(id){
+  const t=timers.find(x=>x.id===id);
+  if(!t)return;
+  if(t.type==='countdown'){
+    t.remaining=t.total;
+    t.state='idle';
+    t._alarmFired=false;
+    t._endProcessed=false;
+    t._alarmFiredBefores={};
+    t.endTime=null;
+  }
+  clearDismiss(id);
+  save();
+  render();
+}
 
 /* ── アラーム ── */
 // 残り○秒前の予告アラーム（stateは変えず、fullscreenキューに積むだけ）
@@ -761,6 +822,7 @@ function dismissAlarmInt(id,silent=false){
     // timealarmはリセット・削除しない（翌日また発火する）
     if(t.type==='timealarm'){
       t.state='running';t._alarmFired=false;t._alarmTotal=null; // BUG-B修正: 翌日も発火できるようrunningに戻す
+      t.nextAlarmTime = Date.now() + alarmRem(t.alarmAt) * 1000;
     }else if(t.onEnd==='remove'){
       timers=timers.filter(x=>x.id!==id);
       alarmQueue=alarmQueue.filter(x=>x!==id);
@@ -806,18 +868,23 @@ function checkTriggers(event,srcId){
     if(t.state==='paused')(t.resumeTriggers||[]).forEach(tr=>{if(tr.cond===event&&(tr.target==='any'||tr.target===srcId))resumeTimer(t.id);});
   });
 }
-function checkTimerEndTriggers(finId){
-  timers.forEach(t=>{
+function checkTimerEndTriggers(finId, finEndTime){
+  const snapshot=[...timers];
+  snapshot.forEach(t=>{
     if(t.type!=='countdown'||(t.state!=='idle'&&t.state!=='done'))return;
-    if(t.startTrigger==='timer_any'&&(t.startTimerIds||[]).includes(finId))startTimer(t.id);
+    if(t.startTrigger==='timer_any'&&(t.startTimerIds||[]).includes(finId)){
+      startTimer(t.id, finEndTime);
+    }
     if(t.startTrigger==='timer_all'){
       const ids=t.startTimerIds||[];
-      // BUG-1修正: finId自体はまだ状態遷移前(running)の場合があるので特別扱いする
       if(ids.length>0&&ids.every(id=>{
         if(id===finId)return true; // 今まさに終了したタイマーは「終了済み」とみなす
         const o=timers.find(x=>x.id===id);
         return!o||['done','alarm','idle'].includes(o.state);
-      }))startTimer(t.id);
+      })){
+        const baseStartTime=Math.max(...ids.map(id=>(id===finId?finEndTime:(timers.find(x=>x.id===id)?.endTime||0))));
+        startTimer(t.id, baseStartTime);
+      }
     }
   });
 }
@@ -1067,7 +1134,10 @@ function tick(){
       return;
     }
     if(t.type==='timealarm'){
-      const rem=alarmRem(t.alarmAt);
+      if(!t.nextAlarmTime){
+        t.nextAlarmTime = Date.now() + alarmRem(t.alarmAt) * 1000;
+      }
+      const rem=Math.max(0, Math.floor((t.nextAlarmTime - Date.now()) / 1000));
       const el=document.getElementById(`time-${t.id}`);
       if(el){
         el.textContent=fmtTime(rem);const color=getColor(t,rem);el.style.color=color;
@@ -1080,7 +1150,8 @@ function tick(){
     // countdown: running中、またはalarmBefores系アラーム中もカウント継続
     const hasBefores=(t.alarmBefores||[]).length>0;
     if(t.type==='countdown'&&(t.state==='running'||(t.state==='alarm'&&hasBefores&&t.remaining>0))){
-      t.remaining=Math.max(0,t.remaining-1);
+      if(!t.endTime) t.endTime = Date.now() + t.remaining * 1000;
+      t.remaining=Math.max(0,Math.ceil((t.endTime-Date.now())/1000));
       if(!t._alarmFiredBefores)t._alarmFiredBefores={};
       // 残り○秒前アラームを各々チェック
       (t.alarmBefores||[]).forEach(secs=>{
@@ -1091,9 +1162,9 @@ function tick(){
       });
       // 残り0アラーム（必ず発火）
       if(t.remaining===0&&!t._alarmFired&&t.alarmType!=='none'){
-        triggerAlarm(t);nR=true;checkTimerEndTriggers(t.id);
+        triggerAlarm(t);nR=true;checkTimerEndTriggers(t.id,t.endTime);
       } else if(t.remaining===0&&!t._endProcessed){
-        t._endProcessed=true;checkTimerEndTriggers(t.id);
+        t._endProcessed=true;checkTimerEndTriggers(t.id,t.endTime);
         if(t.onEnd==='reset'){t.remaining=t.total;t.state='idle';t._alarmFiredBefores={};}
         else if(t.onEnd==='remove')timers=timers.filter(x=>x.id!==t.id);
         else t.state='done';nR=true;
@@ -1142,7 +1213,9 @@ load();
   const b=localStorage.getItem('brightness');
   if(b){document.getElementById('brightness-slider').value=b;applyBrightness(b);}
 })();
-render();setInterval(tick,1000);
+render();
+tick(); // 初回チェックを即時実行
+setInterval(tick,1000);
 </script>
 </body>
 </html>
