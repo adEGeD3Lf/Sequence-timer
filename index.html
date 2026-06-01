@@ -154,6 +154,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:1
     <button class="btn-sm" id="btn-brightness" onclick="toggleBrightnessPanel()" title="明るさ設定">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
     </button>
+    <button class="btn-sm" id="btn-wakelock" onclick="toggleWakeLock()" title="画面をオンにし続ける">
+      <svg id="wakelock-icon-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;display:none;"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/><path d="M19 3v4M21 5h-4"/></svg>
+      <svg id="wakelock-icon-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z"/></svg>
+      <span id="wakelock-label">画面ON</span>
+    </button>
     <button class="btn-sm" onclick="exportJSON()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>保存
     </button>
@@ -1206,6 +1211,63 @@ function toggleBrightnessPanel(){
   p.style.display=p.style.display==='none'?'':'none';
 }
 
+/* ── Screen Wake Lock ── */
+let _wakeLock=null;
+let _wakeLockEnabled=false;
+
+async function requestWakeLock(){
+  if(!('wakeLock' in navigator)){return;}
+  try{
+    _wakeLock=await navigator.wakeLock.request('screen');
+    _wakeLock.addEventListener('release',()=>{
+      // バックグラウンド移行などで自動解除された場合、再取得を試みる
+      _wakeLock=null;
+      if(_wakeLockEnabled)setTimeout(requestWakeLock,1000);
+    });
+  }catch(e){
+    // 非対応環境やページ非表示時は無視
+  }
+}
+
+function releaseWakeLock(){
+  if(_wakeLock){_wakeLock.release();_wakeLock=null;}
+}
+
+function updateWakeLockUI(){
+  const btn=document.getElementById('btn-wakelock');
+  const iconOn=document.getElementById('wakelock-icon-on');
+  const iconOff=document.getElementById('wakelock-icon-off');
+  const label=document.getElementById('wakelock-label');
+  if(!btn)return;
+  if(_wakeLockEnabled){
+    btn.style.background='#1a2a42';btn.style.borderColor='#2a4468';btn.style.color='#6aaaf0';
+    iconOn.style.display='';iconOff.style.display='none';
+    label.textContent='画面ON';
+  }else{
+    btn.style.background='';btn.style.borderColor='';btn.style.color='';
+    iconOn.style.display='none';iconOff.style.display='';
+    label.textContent='画面ON';
+  }
+}
+
+async function toggleWakeLock(){
+  if(!('wakeLock' in navigator)){
+    alert('このブラウザはScreen Wake Lock APIに対応していません。');return;
+  }
+  _wakeLockEnabled=!_wakeLockEnabled;
+  if(_wakeLockEnabled){await requestWakeLock();}
+  else{releaseWakeLock();}
+  updateWakeLockUI();
+  localStorage.setItem('wakeLockEnabled',_wakeLockEnabled?'1':'0');
+}
+
+// ページ表示復帰時に再取得（バックグラウンドから戻ったとき）
+document.addEventListener('visibilitychange',async()=>{
+  if(document.visibilityState==='visible'&&_wakeLockEnabled&&!_wakeLock){
+    await requestWakeLock();
+  }
+});
+
 /* ── 初期化 ── */
 load();
 // 明るさ設定を復元
@@ -1216,6 +1278,12 @@ load();
 render();
 tick(); // 初回チェックを即時実行
 setInterval(tick,1000);
+// Wake Lock設定を復元
+(function(){
+  const wl=localStorage.getItem('wakeLockEnabled');
+  if(wl==='1'){_wakeLockEnabled=true;requestWakeLock();updateWakeLockUI();}
+  else{updateWakeLockUI();}
+})();
 </script>
 </body>
 </html>
