@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -422,7 +423,23 @@ function save(){localStorage.setItem('timers_v3',JSON.stringify(timers));}
 function load(){
   try{
     const raw=localStorage.getItem('timers_v3');
-    if(!raw)return;
+    if(!raw){
+      // 初回起動時: 1分タイマーと時計をデフォルト表示
+      timers=[
+        {
+          id:uid(),type:'countdown',title:'',total:60,remaining:60,state:'idle',
+          onEnd:'reset',startTrigger:'manual',startAt:'',startTimerIds:[],startAlarmTarget:'any',
+          alarmType:'fullscreen',alarmBefores:[],faContent:'title',faText:'',
+          alarmDismiss:'click',alarmDismissTimeout:10,pausable:true,
+          baseColor:'#b85010',thresholds:[],pauseTriggers:[],resumeTriggers:[],
+          _alarmFired:false,_endProcessed:false,_alarmFiredBefores:{}
+        },
+        {
+          id:uid(),type:'clock',title:'',fmt:'24',dateFmt:'date-only'
+        }
+      ];
+      return;
+    }
     timers=JSON.parse(raw);
     const now=Date.now();
     timers.forEach(t=>{
